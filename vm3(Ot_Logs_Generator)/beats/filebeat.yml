@@ -1,0 +1,28 @@
+filebeat.inputs:
+  - type: log
+    id: ot-log-generator
+    enabled: true
+    paths:
+      - /var/log/ot-traffic.log
+    json.keys_under_root: true
+    json.add_error_key: true
+    fields:
+      generator_host: vm3-generator
+
+filebeat.config.modules:
+  path: ${path.config}/modules.d/*.yml
+  reload.enabled: false
+
+output.logstash:
+  hosts: ["$LOGSTASH_HOST:5044"]
+  ssl.enabled: false
+
+processors:
+  - add_host_metadata:
+      when.not.contains.tags: forwarded
+  - add_cloud_metadata: ~
+  - add_docker_metadata: ~
+  - add_kubernetes_metadata: ~
+
+setup.kibana:
+  host: "$KIBANA_HOST"
