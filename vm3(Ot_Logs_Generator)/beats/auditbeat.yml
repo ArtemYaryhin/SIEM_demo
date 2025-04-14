@@ -1,0 +1,10 @@
+output.elasticsearch:
+  hosts: ["https://$ELASTIC_HOST:9200"]
+  username: "$ELASTIC_USER"
+  password: "$ELASTIC_PASSWORD"
+  ssl:
+    verification_mode: none
+
+setup.kibana:
+  host: "https://$KIBANA_HOST:5601"
+  ssl.verification_mode: none
