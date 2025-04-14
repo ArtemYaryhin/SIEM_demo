@@ -1,0 +1,5 @@
+- pipeline.id: main-pipeline
+  path.config: "/etc/logstash/pipelines/main-pipeline.conf"
+
+- pipeline.id: alert-pipeline
+  path.config: "/etc/logstash/pipelines/alert-pipeline.conf"
