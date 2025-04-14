@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 import json
-from app.model_llm import analyze_with_llm
+from app.model_router import analyze_with_best_model
 from elasticsearch import Elasticsearch
 
 load_dotenv('/etc/telegram_alert.env')
@@ -14,9 +14,9 @@ app = FastAPI()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-ES_HOST = os.getenv("ES_HOST", "http://$ELASTIC_HOST:9200")
+ES_HOST = os.getenv("ES_HOST", "http://localhost:9200")
 
-es = Elasticsearch([{'scheme': 'http', 'host': '$ELASTIC_HOST', 'port': 9200}])
+es = Elasticsearch([{'scheme': 'http', 'host': ES_HOST.replace("http://", "").replace("https://", ""), 'port': 9200}])
 
 def send_telegram_message(text: str, reply_markup=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -27,7 +27,9 @@ def send_telegram_message(text: str, reply_markup=None):
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    requests.post(url, json=payload)
+    response = requests.post(url, json=payload)
+    print("📬 Telegram status:", response.status_code, response.text)
+    return response.status_code == 200
 
 def esc(s):
     if not isinstance(s, str):
@@ -42,12 +44,31 @@ def esc(s):
 
 def save_to_elasticsearch(index, document):
     try:
-        es.index(index=index, body=document)
+        response = es.index(index=index, body=document)
+        print("✅ Data saved to Elasticsearch:", response)
     except Exception as e:
         print("❌ Error saving to Elasticsearch:", str(e))
 
+def fetch_history(source_ip):
+    query = {
+        "query": {
+            "match": {
+                "source_ip": source_ip
+            }
+        },
+        "size": 10,
+        "sort": [
+            {"timestamp": {"order": "desc"}}
+        ]
+    }
+    try:
+        res = es.search(index="ai_analysis", body=query)
+        return [hit["_source"] for hit in res["hits"]["hits"]]
+    except:
+        return []
+
 def save_analysis(data, analysis, confidence_pct):
-    doc = {
+    analysis_entry = {
         "event_type": data.get("event_type", "N/A"),
         "source_ip": data.get("source_ip", "N/A"),
         "destination_ip": data.get("destination_ip", "N/A"),
@@ -56,20 +77,25 @@ def save_analysis(data, analysis, confidence_pct):
         "analysis": analysis,
         "timestamp": datetime.utcnow().isoformat()
     }
-    save_to_elasticsearch("ai_analysis", doc)
+    save_to_elasticsearch("ai_analysis", analysis_entry)
 
 def save_feedback(identifier, feedback_type, user):
-    feedback = {
+    feedback_entry = {
         "id": identifier,
         "feedback": feedback_type,
         "user": user,
         "timestamp": datetime.utcnow().isoformat()
     }
-    save_to_elasticsearch("feedback", feedback)
+    save_to_elasticsearch("feedback", feedback_entry)
 
     emoji = "✅" if feedback_type == "true" else "❌"
-    msg = f"{emoji} *Feedback processed*\n\n*User:* `{esc(user)}`\n*Feedback:* `{feedback_type}`\n*Source IP:* `{identifier}`"
-    send_telegram_message(msg)
+    confirmation_message = (
+        f"{emoji} *Feedback processed*\n\n"
+        f"*User:* `{esc(user)}`\n"
+        f"*Feedback:* `{feedback_type}`\n"
+        f"*Source IP:* `{identifier}`"
+    )
+    send_telegram_message(confirmation_message)
 
 @app.get("/")
 def root():
@@ -78,6 +104,7 @@ def root():
 @app.post("/alert")
 async def receive_alert(request: Request):
     data = await request.json()
+    print("🔍 RAW PAYLOAD:", data)
 
     event_type = esc(data.get("event_type", "N/A"))
     source_ip = esc(data.get("source_ip", "N/A"))
@@ -87,7 +114,7 @@ async def receive_alert(request: Request):
     host = esc(data.get("host", "N/A"))
     timestamp = esc(data.get("timestamp", datetime.utcnow().isoformat()))
 
-    msg1 = (
+    message1 = (
         "⚠️ *Suspicious log received*\n\n"
         f"*Timestamp:* {timestamp}\n"
         f"*Host:* {host}\n"
@@ -96,21 +123,29 @@ async def receive_alert(request: Request):
         f"*Severity:* {severity}\n"
         f"*Details:* {extra_info}"
     )
-    send_telegram_message(msg1)
+    send_telegram_message(message1)
 
-    llm_result = analyze_with_llm(data)
+    history = fetch_history(data.get("source_ip", ""))
+    llm_result = analyze_with_best_model(data, history=history)
 
     if 'summary' in llm_result:
         analysis = esc(llm_result['summary'])
-        confidence_pct = round(llm_result.get("confidence_score", 0) * 100)
-        source = esc(llm_result.get('source', 'Unknown'))
-        recommendations = esc(llm_result.get('recommendations', 'No recommendations'))
+        raw_confidence = llm_result.get("confidence_score", 0)
+        confidence_pct = round(raw_confidence * 100)
+        source = esc(llm_result.get('source', 'Unknown source'))
+        recommendations = esc(llm_result.get('recommendations', 'No recommendations available'))
 
-        emoji = "🔴" if confidence_pct < 25 else "🟠" if confidence_pct < 50 else "🟡" if confidence_pct < 75 else "🟢"
-        mood = "Critical" if confidence_pct < 25 else "Low" if confidence_pct < 50 else "Medium" if confidence_pct < 75 else "High"
+        if confidence_pct < 25:
+            emoji, mood = "🔴", "Critical"
+        elif confidence_pct < 50:
+            emoji, mood = "🟠", "Low"
+        elif confidence_pct < 75:
+            emoji, mood = "🟡", "Medium"
+        else:
+            emoji, mood = "🟢", "High"
 
-        msg2 = (
-            "✅ *Log analyzed with GPT*\n\n"
+        message2 = (
+            "✅ *Log analyzed with AI*\n\n"
             f"*Confidence:* {emoji} {confidence_pct}% {mood}\n"
             f"*Summary:*\n{analysis}\n\n"
             f"*Reference:* {source}\n"
@@ -128,16 +163,22 @@ async def receive_alert(request: Request):
             ]
         }
 
-        send_telegram_message(msg2, reply_markup=json.dumps(reply_markup))
+        send_telegram_message(message2, reply_markup=json.dumps(reply_markup))
     else:
         error = esc(llm_result.get('error', 'Unknown error'))
-        send_telegram_message(f"❗ *GPT Analysis Failed*\n\n*Reason:* {error}")
+        message2 = (
+            "❗ *AI Analysis Failed*\n\n"
+            f"*Reason:* {error}"
+        )
+        send_telegram_message(message2)
 
     return {"status": "received", "analyzed": True}
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     payload = await request.json()
+    print("🤖 Webhook payload:", payload)
+
     if "callback_query" in payload:
         query = payload["callback_query"]
         data = query["data"]
@@ -150,10 +191,11 @@ async def telegram_webhook(request: Request):
             identifier = parts[2]
 
             try:
-                requests.post(
+                r = requests.post(
                     f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                     json={"callback_query_id": query_id, "text": "✅ Feedback received"}
                 )
+                print("📩 Telegram callback status:", r.status_code, r.text)
             except Exception as e:
                 print("❌ Callback error:", str(e))
 
