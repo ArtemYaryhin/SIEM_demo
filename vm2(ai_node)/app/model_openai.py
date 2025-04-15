@@ -14,48 +14,58 @@ def analyze_with_openai(data, history=None):
         timestamp = data.get("timestamp", "N/A")
         severity = data.get("severity", "N/A")
 
-        # Подготовим history, если есть
+        # Подготовим историю
         history_text = ""
         if history:
-            history_text = "Recent related events:\n" + json.dumps(history[-5:], indent=2) + "\n\n"
+            history_text += "Previous events from this IP:\n"
+            for h in history[-5:]:
+                history_text += f"- [{h.get('timestamp', '?')}] {h.get('extra_info', '')}\n"
+            history_text += "\n"
 
         system_message = {
             "role": "system",
             "content": (
-                "You are an AI security analyst. Based on the input, return a JSON object with:\n"
-                "1. 'summary': a one-line summary of the threat like:\n"
-                "   '[timestamp] [severity] [event_type] attack from [source_ip] targeting [destination_ip]: [extra_info]'\n"
-                "2. 'confidence_score': a float from 0.0 to 1.0 indicating how confident you are.\n"
-                "Return valid JSON only."
+                "You are a cybersecurity analyst AI with 20 years experience. Based on the event, please, provide a response strictly in valid JSON format with **all 4 fields**:\n"
+                "1. `summary`: a short one-line explanation of the threat.\n"
+                "2. `confidence_score`: integer from 1 to 100. Be honest and realistic. If you are fully confident, return 100.\n"
+                "   This score should reflect how reliable your own summary and understanding are.\n"
+                "3. `source`: a URL, CVE, or documentation if available. Otherwise say 'internal reasoning'.\n"
+                "4. `recommendations`: clear, practical steps to respond to the issue.\n\n"
+                "Return only a JSON object. No explanations, no markdown, no preambles."
             )
         }
 
         user_message = {
             "role": "user",
             "content": history_text + (
+                f"Event Details:\n"
                 f"Timestamp: {timestamp}\n"
                 f"Severity: {severity}\n"
-                f"Type: {event_type}\n"
-                f"Source: {source_ip}\n"
-                f"Destination: {destination_ip}\n"
-                f"Details: {extra_info}"
+                f"Event Type: {event_type}\n"
+                f"Source IP: {source_ip}\n"
+                f"Destination IP: {destination_ip}\n"
+                f"Extra Info: {extra_info}"
             )
         }
 
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[system_message, user_message],
-            temperature=0.2,
-            max_tokens=150,
+            temperature=0.3,
+            max_tokens=300
         )
 
-        response_text = response.choices[0].message["content"].strip()
-        print("✅ OpenAI raw response:", response_text)
+        raw_output = response.choices[0].message["content"].strip()
+        print("✅ OpenAI raw response:", raw_output)
 
         try:
-            return json.loads(response_text)
+            result = json.loads(raw_output)
+            result["model_used"] = "openai"
+            return result
         except json.JSONDecodeError as je:
-            return {"error": f"Invalid JSON response: {response_text}"}
+            print("❌ JSON parse error:", je)
+            return {"error": f"Invalid JSON response: {raw_output}"}
 
     except Exception as e:
-        return {"error": traceback.format_exc()}
+        print("❌ OpenAI Exception:", traceback.format_exc())
+        return {"error": str(e)}
