@@ -9,14 +9,23 @@ filebeat.inputs:
     fields:
       generator_host: vm3-generator
 
+  - type: log
+    id: auditbeat-sockets
+    enabled: true
+    paths:
+      - /var/log/auditbeat/auditbeat*
+    json.keys_under_root: true
+    json.add_error_key: true
+    fields:
+      beat_type: auditbeat
+
 filebeat.config.modules:
   path: ${path.config}/modules.d/*.yml
   reload.enabled: false
 
 output.logstash:
-  hosts: ["$LOGSTASH_HOST:5044"]
+  hosts: ["10.128.0.16:5044"]
   ssl.enabled: false
-
 processors:
   - add_host_metadata:
       when.not.contains.tags: forwarded
@@ -25,4 +34,3 @@ processors:
   - add_kubernetes_metadata: ~
 
 setup.kibana:
-  host: "$KIBANA_HOST"
